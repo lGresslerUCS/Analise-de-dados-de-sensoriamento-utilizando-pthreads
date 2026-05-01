@@ -5,6 +5,8 @@
 #include <pthread.h>
 #include "cJSON.h"
 
+#include <sys/time.h>
+
 // --- 1. ESTRUTURAS DE DADOS ---
 typedef struct {
     char cidade[50];
@@ -377,8 +379,8 @@ void imprimir_resultados(double tempo_gasto) {
 }
 
 int main() {
-    struct timespec inicio, fim;
-    clock_gettime(CLOCK_MONOTONIC, &inicio);
+    struct timeval inicio, fim;
+    gettimeofday(&inicio, NULL);
 
     // Agora temos 3 threads
     pthread_t t_leitura, t_estatisticas, t_logs;
@@ -393,8 +395,9 @@ int main() {
     pthread_join(t_estatisticas, NULL);
     pthread_join(t_logs, NULL); // Aguarda a thread de logs fechar o arquivo
     
-    clock_gettime(CLOCK_MONOTONIC, &fim);
-    double tempo_gasto = (fim.tv_sec - inicio.tv_sec) + (fim.tv_nsec - inicio.tv_nsec) / 1e9;
+    gettimeofday(&fim, NULL);
+    double tempo_gasto = (fim.tv_sec - inicio.tv_sec) +
+                         (fim.tv_usec - inicio.tv_usec) / 1000000.0;
 
     imprimir_resultados(tempo_gasto);
 
