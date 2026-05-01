@@ -7,6 +7,13 @@
 
 #include <sys/time.h>
 
+#define MAX_TIMESTAMPS 120000
+
+char timestamps_vistos[MAX_TIMESTAMPS][30];
+int total_timestamps = 0;
+
+pthread_mutex_t mutex_timestamps = PTHREAD_MUTEX_INITIALIZER;
+
 // --- 1. ESTRUTURAS DE DADOS ---
 typedef struct {
     char cidade[50];
@@ -22,6 +29,26 @@ typedef struct {
 Medicao buffer_medicoes[TAMANHO_BUFFER];
 int total_no_buffer = 0;
 int leitura_concluida = 0; 
+
+int eh_duplicata(const char *timestamp){
+
+    pthread_mutex_lock(&mutex_timestamps);
+
+    for(int i=0;i<total_timestamps;i++){
+        if(strcmp(timestamps_vistos[i], timestamp) == 0){
+            pthread_mutex_unlock(&mutex_timestamps);
+            return 1;
+        }
+    }
+
+    if(total_timestamps < MAX_TIMESTAMPS){
+        strcpy(timestamps_vistos[total_timestamps++], timestamp);
+    }
+
+    pthread_mutex_unlock(&mutex_timestamps);
+
+    return 0;
+}
 
 // --- 2. VARIÁVEIS DE SINCRONIZAÇÃO (MUTEX) ---
 pthread_mutex_t mutex_buffer = PTHREAD_MUTEX_INITIALIZER;
@@ -57,71 +84,111 @@ void processar_arquivo_json(const char* nome_arquivo) {
     }
 
     int total_itens = cJSON_GetArraySize(json_array);
+
     for (int i = 0; i < total_itens; i++) {
         cJSON *item = cJSON_GetArrayItem(json_array, i);
-        
+
         // Trata a diferença entre os dois arquivos
         cJSON *texto_interno = cJSON_GetObjectItem(item, "brute_data");
         if (!texto_interno) texto_interno = cJSON_GetObjectItem(item, "payload");
-        
+
         if (texto_interno && cJSON_IsString(texto_interno)) {
+
             cJSON *inner_json = cJSON_Parse(texto_interno->valuestring);
+
             if (inner_json) {
+
                 cJSON *device_name = cJSON_GetObjectItem(inner_json, "device_name");
                 cJSON *data_array = cJSON_GetObjectItem(inner_json, "data");
-                
+
                 if (device_name && data_array && cJSON_IsArray(data_array)) {
+
                     Medicao m;
                     // Inicializa com valores impossíveis para detetar pacotes incompletos
+
                     m.temperatura = -999.0;
                     m.umidade = -999.0;
                     m.pressao = -999.0;
                     m.bateria = -999.0;
                     m.sf = -1;
+
                     strcpy(m.data_hora, "Sem Data");
+
                     strncpy(m.cidade, device_name->valuestring, 49);
-                    
-                    // Varre as variáveis dentro do "data"
+
+                    // Varre as variaveis dentro do "data"
                     int qtd_dados = cJSON_GetArraySize(data_array);
+
                     for (int j = 0; j < qtd_dados; j++) {
+
                         cJSON *dado = cJSON_GetArrayItem(data_array, j);
+
                         cJSON *var = cJSON_GetObjectItem(dado, "variable");
                         cJSON *val = cJSON_GetObjectItem(dado, "value");
                         cJSON *time = cJSON_GetObjectItem(dado, "time");
-                        
+
                         if (var && val) {
+
                             if (strcmp(var->valuestring, "temperature") == 0) {
-                                m.temperatura = (val->type == cJSON_Number) ? val->valuedouble : val->valueint;
-                                if (time) strncpy(m.data_hora, time->valuestring, 29);
-                            } else if (strcmp(var->valuestring, "humidity") == 0) {
-                                m.umidade = (val->type == cJSON_Number) ? val->valuedouble : val->valueint;
-                            } else if (strcmp(var->valuestring, "airpressure") == 0) {
-                                m.pressao = (val->type == cJSON_Number) ? val->valuedouble : val->valueint;
-                            } else if (strcmp(var->valuestring, "batterylevel") == 0) {
-                                m.bateria = (val->type == cJSON_Number) ? val->valuedouble : val->valueint;
-                            } else if (strcmp(var->valuestring, "lora_spreading_factor") == 0) {
+
+                                m.temperatura = (val->type == cJSON_Number)
+                                                    ? val->valuedouble
+                                                    : val->valueint;
+
+                                if (time)
+                                    strncpy(m.data_hora, time->valuestring, 29);
+                            }
+
+                            else if (strcmp(var->valuestring, "humidity") == 0) {
+                                m.umidade = (val->type == cJSON_Number)
+                                                ? val->valuedouble
+                                                : val->valueint;
+                            }
+
+                            else if (strcmp(var->valuestring, "airpressure") == 0) {
+                                m.pressao = (val->type == cJSON_Number)
+                                                ? val->valuedouble
+                                                : val->valueint;
+                            }
+
+                            else if (strcmp(var->valuestring, "batterylevel") == 0) {
+                                m.bateria = (val->type == cJSON_Number)
+                                                ? val->valuedouble
+                                                : val->valueint;
+                            }
+
+                            else if (strcmp(var->valuestring, "lora_spreading_factor") == 0) {
                                 m.sf = val->valueint;
                             }
                         }
                     }
-                    
+
+                    // VERIFICA DUPLICATA
+                    if (eh_duplicata(m.data_hora)) {
+                        cJSON_Delete(inner_json);
+                        continue;
+                    }
+
                     // --- ZONA CRÍTICA: INSERIR NO BUFFER ---
                     pthread_mutex_lock(&mutex_buffer);
+
                     while (total_no_buffer == TAMANHO_BUFFER) {
                         pthread_cond_wait(&cond_pode_produzir, &mutex_buffer);
                     }
-                    
+
                     buffer_medicoes[total_no_buffer] = m;
                     total_no_buffer++;
-                    
+
                     pthread_cond_signal(&cond_pode_consumir);
                     pthread_mutex_unlock(&mutex_buffer);
                     // ---------------------------------------
                 }
+
                 cJSON_Delete(inner_json);
             }
         }
     }
+
     cJSON_Delete(json_array);
     free(conteudo_json);
 }
